@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planfix Reminder - Инструкция</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+        }
+        h3 {
+            color: #2980b9;
+        }
+        .step {
+            background: #ecf0f1;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #3498db;
+            border-radius: 5px;
+        }
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .button-red { 
+            background: #e74c3c; 
+            color: white; 
+            padding: 5px 10px; 
+            border-radius: 3px; 
+            display: inline-block;
+            margin: 2px;
+        }
+        .button-orange { 
+            background: #f39c12; 
+            color: white; 
+            padding: 5px 10px; 
+            border-radius: 3px; 
+            display: inline-block;
+            margin: 2px;
+        }
+        .button-blue { 
+            background: #3498db; 
+            color: white; 
+            padding: 5px 10px; 
+            border-radius: 3px; 
+            display: inline-block;
+            margin: 2px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        code {
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        .config-example {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 PLANFIX REMINDER v1.0</h1>
+        <p style="text-align: center; font-size: 18px; color: #7f8c8d;">
+            Автоматические уведомления о задачах из Planfix
+        </p>
+
+        <div class="success">
+            <h3>✅ Что делает программа:</h3>
+            <ul>
+                <li><span class="button-red">🔴 Просроченные</span> - красные окна с настойчивым звуком</li>
+                <li><span class="button-orange">🟡 Срочные</span> - оранжевые окна (срок сегодня/завтра)</li>
+                <li><span class="button-blue">📋 Обычные</span> - синие окна без звука</li>
+            </ul>
+            <p><strong>Все окна висят на экране пока вы сами их не закроете!</strong></p>
+        </div>
+
+        <h2>🎯 Настройка за 3 шага</h2>
+        
+        <div class="step">
+            <h3>Шаг 1: Получите API токен в Planfix</h3>
+            <ol>
+                <li>Откройте ваш Planfix в браузере</li>
+                <li>Настройки → API → REST API</li>
+                <li>Создайте токен с правами "Чтение задач"</li>
+                <li><strong>Скопируйте токен</strong> (показывается только один раз!)</li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Шаг 2: Настройте config.ini</h3>
+            <ol>
+                <li>Скопируйте <code>config.ini.example</code> → <code>config.ini</code></li>
+                <li>Откройте <code>config.ini</code> в блокноте</li>
+                <li>Замените <code>ВСТАВЬТЕ_ВАШ_API_ТОКЕН_ЗДЕСЬ</code> на ваш токен</li>
+                <li>Замените <code>l-s</code> на название вашего аккаунта</li>
+            </ol>
+            
+            <p><strong>Пример готового config.ini:</strong></p>
+            <div class="config-example">
+[Planfix]
+api_token = abc123def456ghi789...
+account_url = https://мой-офис.planfix.com/rest
+
+[Settings]
+check_interval = 300
+notify_current = true
+notify_urgent = true  
+notify_overdue = true
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>Шаг 3: Запустите программу</h3>
+            <ol>
+                <li>Двойной клик по <code>PlanfixReminder.exe</code></li>
+                <li>Программа запустится в фоне</li>
+                <li>Через несколько секунд появятся уведомления</li>
+            </ol>
+        </div>
+
+        <h2>🎛️ Управление уведомлениями</h2>
+        
+        <table>
+            <tr>
+                <th>Кнопка</th>
+                <th>Действие</th>
+            </tr>
+            <tr>
+                <td>🌐 <strong>Открыть</strong></td>
+                <td>Открывает задачу в браузере Planfix</td>
+            </tr>
+            <tr>
+                <td>⏰ <strong>15мин</strong></td>
+                <td>Отложить уведомление на 15 минут</td>
+            </tr>
+            <tr>
+                <td>🕐 <strong>1ч</strong></td>
+                <td>Отложить уведомление на 1 час</td>
+            </tr>
+            <tr>
+                <td>✅ <strong>Готово</strong></td>
+                <td>Пометить как просмотренную (не показывать больше)</td>
+            </tr>
+            <tr>
+                <td>❌ <strong>✕</strong></td>
+                <td>Закрыть окно (появится снова через время)</td>
+            </tr>
+            <tr>
+                <td>📌</td>
+                <td>Закрепить/открепить окно поверх других программ</td>
+            </tr>
+        </table>
+
+        <div class="warning">
+            <h3>⚠️ Повторный показ задач:</h3>
+            <p>Если случайно закрыли задачу кнопкой ❌, она появится снова:</p>
+            <ul>
+                <li>🔴 <strong>Просроченные:</strong> через 5 минут</li>
+                <li>🟡 <strong>Срочные:</strong> через 15 минут</li>
+                <li>📋 <strong>Обычные:</strong> через 30 минут</li>
+            </ul>
+        </div>
+
+        <h2>❗ Решение проблем</h2>
+        
+        <div class="error">
+            <h4>"Файл config.ini не найден"</h4>
+            <p>Скопируйте <code>config.ini.example</code> в <code>config.ini</code></p>
+        </div>
+
+        <div class="error">
+            <h4>"API-токен не указан"</h4>
+            <p>Получите новый токен в настройках Planfix и правильно вставьте в config.ini</p>
+        </div>
+
+        <div class="error">
+            <h4>"Не удалось подключиться к API"</h4>
+            <p>Проверьте интернет, правильность токена и URL аккаунта</p>
+        </div>
+
+        <div class="error">
+            <h4>"Активных задач не найдено"</h4>
+            <p>Убедитесь что у вас есть задачи где вы исполнитель или постановщик</p>
+        </div>
+
+        <h2>⚙️ Настройки</h2>
+        
+        <table>
+            <tr>
+                <th>Параметр</th>
+                <th>Описание</th>
+                <th>Примеры</th>
+            </tr>
+            <tr>
+                <td><code>check_interval</code></td>
+                <td>Как часто проверять задачи (секунды)</td>
+                <td>300 = 5 мин<br>600 = 10 мин</td>
+            </tr>
+            <tr>
+                <td><code>notify_overdue</code></td>
+                <td>Показывать просроченные</td>
+                <td>true / false</td>
+            </tr>
+            <tr>
+                <td><code>notify_urgent</code></td>
+                <td>Показывать срочные</td>
+                <td>true / false</td>
+            </tr>
+            <tr>
+                <td><code>notify_current</code></td>
+                <td>Показывать обычные</td>
+                <td>true / false</td>
+            </tr>
+        </table>
+
+        <div style="text-align: center; margin-top: 40px; padding-top: 20px; border-top: 2px solid #3498db;">
+            <p><strong>Версия:</strong> 1.0 | <strong>Дата:</strong> Август 2025</p>
+            <p>💡 <em>Добавьте программу в автозапуск и больше никогда не пропускайте важные задачи!</em></p>
+        </div>
+    </div>
+</body>
+</html>
