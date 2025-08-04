@@ -28,9 +28,14 @@ class PlanfixAPI:
         Получает ID текущего пользователя по токену через /user/list
         """
         try:
+            payload = {
+            'offset': 0,
+            'pageSize': 100,
+            'fields': 'id,name,midname,lastname'
+            }
             response = self.session.post(
                 f"{self.account_url}/user/list",
-                json={},
+                json=payload,
                 timeout=30
             )
             if response.status_code == 200:
@@ -51,24 +56,26 @@ class PlanfixAPI:
         except Exception as e:
             print(f"❌ Ошибка получения ID пользователя: {e}")
             return None
-
     def get_current_user_tasks(self) -> List[Dict[Any, Any]]:
-        """
-        Получает задачи текущего пользователя из Planfix API
-        """
+        """Получает задачи текущего пользователя из Planfix API"""
+        # 1. Проверяем, есть ли user_id
         if not self.user_id:
             self.get_current_user_id()
         if not self.user_id:
             print("❌ Не удалось получить ID пользователя. Невозможно отфильтровать задачи.")
             return []
+        
         print(f"👤 Получаем задачи для пользователя: {self.user_name} (ID: {self.user_id})")
+        
         try:
+            # 2. Формируем тело запроса с ОБЯЗАТЕЛЬНЫМ параметром 'type'
             payload = {
+                'type': 'task',  # ← Главное исправление! Этот параметр обязателен
                 'filters': [
                     {
                         'field': 'status',
                         'operator': 'in',
-                        'value': ['1', '2']
+                        'value': ['1', '2']  # Активные задачи (уточните коды статусов)
                     },
                     {
                         'field': 'assignee',
@@ -76,34 +83,42 @@ class PlanfixAPI:
                         'value': [str(self.user_id)]
                     }
                 ],
-                'fields': ['id', 'name', 'description', 'beginDate', 'endDate', 'status', 'priority', 'assignee', 'general']
+                'fields': [  # Упрощенный список полей
+                    'id', 
+                    'name', 
+                    'description', 
+                    'beginDate', 
+                    'endDate', 
+                    'status', 
+                    'priority'
+                ]
             }
+            
+            # 3. Отправляем запрос
             response = self.session.post(
                 f"{self.account_url}/task/list",
                 json=payload,
                 timeout=30
             )
+            
             print(f"🔍 Статус ответа API: {response.status_code}")
+            
+            # 4. Обрабатываем ответ
             if response.status_code == 200:
                 data = response.json()
-                if 'tasks' in data:
-                    tasks = data['tasks']
-                elif isinstance(data, list):
-                    tasks = data
-                else:
-                    print(f"⚠️ Неожиданная структура ответа: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-                    tasks = []
+                tasks = data.get('tasks', [])
                 print(f"✅ Найдено задач: {len(tasks)}")
                 return tasks
             else:
                 print(f"❌ Ошибка API: {response.status_code}")
-                print(f"📄 Ответ сервера: {response.text[:1000]}")
+                print(f"📄 Ответ сервера: {response.text}")  # ← Теперь выводим полный текст ошибки
                 return []
+                
         except requests.exceptions.RequestException as e:
             print(f"🌐 Ошибка соединения с Planfix API: {e}")
             return []
         except json.JSONDecodeError as e:
-            print(f"📄 Ошибка парсинга ответа API (неверный JSON): {e}")
+            print(f"📄 Ошибка парсинга ответа API: {e}")
             print(f"📄 Полученный текст: {response.text[:500]}")
             return []
 
