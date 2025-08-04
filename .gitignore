@@ -1,0 +1,6 @@
+/.venv
+/debug_task_list.py
+/planfix_reminder_2.py
+/test_alternative_auth.py
+/test_correct_endpoints.py
+/test_planfix_api.py
