@@ -1,9 +1,3 @@
-# Основные зависимости для Planfix Reminder
 requests>=2.31.0
 plyer>=2.1.0
-python-dotenv>=1.0.0
 
-# Дополнительные зависимости для уведомлений
-# Linux: sudo apt-get install libnotify-bin
-# macOS: brew install terminal-notifier  
-# Windows: встроенная поддержка
