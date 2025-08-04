@@ -56,9 +56,9 @@ class PlanfixAPI:
         except Exception as e:
             print(f"❌ Ошибка получения ID пользователя: {e}")
             return None
+    
     def get_current_user_tasks(self) -> List[Dict[Any, Any]]:
         """Получает задачи текущего пользователя из Planfix API"""
-        # 1. Проверяем, есть ли user_id
         if not self.user_id:
             self.get_current_user_id()
         if not self.user_id:
@@ -68,33 +68,32 @@ class PlanfixAPI:
         print(f"👤 Получаем задачи для пользователя: {self.user_name} (ID: {self.user_id})")
         
         try:
-            # 2. Формируем тело запроса с ОБЯЗАТЕЛЬНЫМ параметром 'type'
+            # Явно формируем правильную структуру запроса
             payload = {
-                'type': 'task',  # ← Главное исправление! Этот параметр обязателен
-                'filters': [
-                    {
-                        'field': 'status',
-                        'operator': 'in',
-                        'value': ['1', '2']  # Активные задачи (уточните коды статусов)
-                    },
-                    {
-                        'field': 'assignee',
-                        'operator': 'eq',
-                        'value': [str(self.user_id)]
-                    }
-                ],
-                'fields': [  # Упрощенный список полей
-                    'id', 
-                    'name', 
-                    'description', 
-                    'beginDate', 
-                    'endDate', 
-                    'status', 
-                    'priority'
-                ]
+                "type": "task",  # Обязательный параметр
+                "filters": {
+                    "and": [  # Используем явное указание логического оператора
+                        {
+                            "field": "status",
+                            "operator": "in",
+                            "value": ["1", "2"]  # Активные задачи
+                        },
+                        {
+                            "field": "assignee",
+                            "operator": "eq",
+                            "value": str(self.user_id)  # Может ожидается строка, а не список
+                        }
+                    ]
+                },
+                "fields": {
+                    "field": ["id", "name", "description", "beginDate", "endDate", "status", "priority"]
+                },
+                "pageSize": 100  # Добавляем пагинацию
             }
             
-            # 3. Отправляем запрос
+            # Добавляем логирование отправляемого запроса
+            print(f"🔍 Отправляемый запрос: {json.dumps(payload, indent=2, ensure_ascii=False)}")
+            
             response = self.session.post(
                 f"{self.account_url}/task/list",
                 json=payload,
@@ -103,25 +102,22 @@ class PlanfixAPI:
             
             print(f"🔍 Статус ответа API: {response.status_code}")
             
-            # 4. Обрабатываем ответ
             if response.status_code == 200:
                 data = response.json()
                 tasks = data.get('tasks', [])
                 print(f"✅ Найдено задач: {len(tasks)}")
+                if tasks:
+                    print(f"Пример задачи: {tasks[0]}")
                 return tasks
             else:
                 print(f"❌ Ошибка API: {response.status_code}")
-                print(f"📄 Ответ сервера: {response.text}")  # ← Теперь выводим полный текст ошибки
+                print(f"📄 Ответ сервера: {response.text}")
                 return []
                 
-        except requests.exceptions.RequestException as e:
-            print(f"🌐 Ошибка соединения с Planfix API: {e}")
+        except Exception as e:
+            print(f"❌ Ошибка при получении задач: {str(e)}")
             return []
-        except json.JSONDecodeError as e:
-            print(f"📄 Ошибка парсинга ответа API: {e}")
-            print(f"📄 Полученный текст: {response.text[:500]}")
-            return []
-
+    
     def test_connection(self) -> bool:
         """
         Тестирует соединение с API, пытаясь получить список сотрудников.
