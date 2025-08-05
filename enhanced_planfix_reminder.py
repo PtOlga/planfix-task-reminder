@@ -990,6 +990,8 @@ def main():
     
     try:
         toast_manager.run()
+    except KeyboardInterrupt:
+        pass
     except Exception:
         pass
 
