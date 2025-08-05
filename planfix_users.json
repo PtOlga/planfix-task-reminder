@@ -1,0 +1,77 @@
+[
+  {
+    "id": 1,
+    "name": "Андрей",
+    "midname": "",
+    "lastname": "Розум",
+    "groups": [
+      {
+        "id": 1248,
+        "name": "Все сотрудники"
+      }
+    ],
+    "email": "ar@legal-status.eu",
+    "status": "Active",
+    "position": {}
+  },
+  {
+    "id": 3,
+    "name": "Светлана",
+    "midname": "",
+    "lastname": "Зайцева",
+    "groups": [
+      {
+        "id": 1248,
+        "name": "Все сотрудники"
+      }
+    ],
+    "email": "info@legal-status.eu",
+    "status": "Active",
+    "position": {}
+  },
+  {
+    "id": 4,
+    "name": "Алёна",
+    "midname": "",
+    "lastname": "Павлова",
+    "groups": [
+      {
+        "id": 1248,
+        "name": "Все сотрудники"
+      }
+    ],
+    "email": "alena050474@gmail.com",
+    "status": "Active",
+    "position": {}
+  },
+  {
+    "id": 5,
+    "name": "Игорь",
+    "midname": "",
+    "lastname": "Довгаль",
+    "groups": [
+      {
+        "id": 1248,
+        "name": "Все сотрудники"
+      }
+    ],
+    "email": "work.law.mail@gmail.com",
+    "status": "Active",
+    "position": {}
+  },
+  {
+    "id": 6,
+    "name": "Анна",
+    "midname": "",
+    "lastname": "Пустовит",
+    "groups": [
+      {
+        "id": 1248,
+        "name": "Все сотрудники"
+      }
+    ],
+    "email": "pustovit.anka75@gmail.com",
+    "status": "Active",
+    "position": {}
+  }
+]

@@ -1,15 +1,42 @@
 [Planfix]
-# ВАЖНО: Получите API токен в Planfix -> Настройки -> API -> REST API
-api_token = ВСТАВЬТЕ_ВАШ_API_ТОКЕН_ЗДЕСЬ
+# Общий API токен (один для всех сотрудников)
+api_token = YOUR_SHARED_API_TOKEN_HERE
 
-# URL аккаунта (замените "l-s" на название вашего аккаунта Planfix)
-account_url = https://l-s.planfix.com/rest
+# URL вашего аккаунта Planfix
+account_url = https://your-account.planfix.com/rest
+
+# ВАРИАНТ 1: ID готового фильтра из Planfix (рекомендуется)
+# Если указан filter_id, то настройки [Roles] игнорируются
+filter_id = YOUR_FILTER_ID_HERE
+
+# ВАРИАНТ 2: ID конкретного пользователя (если нет готового фильтра)
+# Используется только если filter_id не указан или пустой
+user_id = 4
 
 [Settings]
-# Проверять задачи каждые N секунд (300 = 5 минут, 600 = 10 минут)
+# Интервал проверки задач (секунды)
+# 300 = 5 минут, 600 = 10 минут, 1800 = 30 минут  
 check_interval = 300
 
-# Показывать уведомления для разных типов задач (true/false)
-notify_current = true     # Обычные задачи
-notify_urgent = true      # Срочные (срок сегодня/завтра)  
-notify_overdue = true     # Просроченные задачи
+# Типы уведомлений (true/false)
+notify_current = true
+notify_urgent = true
+notify_overdue = true
+
+# Лимиты количества окон уведомлений
+# Максимум окон одной категории (просрочено/срочно/обычные)
+max_windows_per_category = 5
+
+# Максимум окон всего на экране одновременно
+max_total_windows = 10
+
+[Roles]
+# Настройки ролей - какие задачи показывать (используется только без filter_id)
+# Показывать задачи где я ИСПОЛНИТЕЛЬ
+include_assignee = true
+
+# Показывать задачи где я ПОСТАНОВЩИК
+include_assigner = true
+
+# Показывать задачи где я КОНТРОЛЕР/УЧАСТНИК
+include_auditor = true

@@ -1,3 +1,9 @@
+# ОСНОВНЫЕ ИЗМЕНЕНИЯ В ЭТОЙ ВЕРСИИ:
+# 1. Добавлена поддержка filter_id из config.ini
+# 2. Новый метод get_filtered_tasks() вместо get_current_user_tasks()
+# 3. Убрана логика определения user_id из токена
+# 4. Исправлен список закрытых статусов: "Завершенная" вместо "Завершена"
+
 import requests
 import time
 from plyer import notification
@@ -15,10 +21,10 @@ import webbrowser
 from urllib.parse import quote
 import queue
 
-# --- Конфигурация ---  
-CHECK_INTERVAL_SECONDS = 5 * 60  # 5 минут
-MAX_WINDOWS_PER_CATEGORY = 5     # Максимум окон одной категории
-MAX_TOTAL_WINDOWS = 10           # Максимум окон всего
+# --- Конфигурация (будет загружаться из config.ini) ---
+CHECK_INTERVAL_SECONDS = 300  # По умолчанию 5 минут (будет перезаписано из config)
+MAX_WINDOWS_PER_CATEGORY = 5  # По умолчанию (будет перезаписано из config)
+MAX_TOTAL_WINDOWS = 10        # По умолчанию (будет перезаписано из config)
 
 # Глобальная очередь для Toast-уведомлений
 toast_queue = queue.Queue()
@@ -319,7 +325,6 @@ class ToastNotification:
     def _open_task(self):
         """Открывает задачу в браузере"""
         if self.task_id:
-            # Получаем URL из config
             config = configparser.ConfigParser()
             try:
                 config.read('config.ini', encoding='utf-8')
@@ -327,7 +332,6 @@ class ToastNotification:
                 task_url = f"{account_url}/task/{self.task_id}/"
                 webbrowser.open(task_url)
             except Exception:
-                # Fallback URL
                 task_url = f"https://planfix.com/task/{self.task_id}/"
                 webbrowser.open(task_url)
     
@@ -484,147 +488,38 @@ def cleanup_old_closed_tasks():
         del closed_tasks[task_id]
 
 class PlanfixAPI:
-    def __init__(self, account_url: str, api_token: str):
+    def __init__(self, account_url: str, api_token: str, filter_id: str = None):
         self.account_url = account_url.rstrip('/')
         self.api_token = api_token
+        self.filter_id = filter_id  # НОВЫЙ ПАРАМЕТР - ID фильтра из config.ini
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {self.api_token}'
         })
-        self.user_id = None
-        self.user_name = None
 
-    def get_current_user_id(self) -> str:
+    def get_filtered_tasks(self) -> List[Dict[Any, Any]]:
         """
-        Получает ID текущего пользователя по токену через /user/list
+        ОБНОВЛЕНО: Получает задачи по фильтру ИЛИ по ролям пользователя
         """
         try:
-            payload = {
-                'offset': 0,
-                'pageSize': 100,
-                'fields': 'id,name,midname,lastname'
-            }
-            response = self.session.post(
-                f"{self.account_url}/user/list",
-                json=payload,
-                timeout=30
-            )
-            if response.status_code == 200:
-                data = response.json()
-                users = data.get('users', [])
-                if users:
-                    self.user_id = users[0].get('id')
-                    self.user_name = users[0].get('name', 'Unknown')
-                    return self.user_id
-                else:
-                    return None
+            if self.filter_id:
+                # Используем готовый фильтр из Planfix
+                return self._get_tasks_by_filter()
             else:
-                return None
-        except Exception:
-            return None
-
-    def get_current_user_tasks(self) -> List[Dict[Any, Any]]:
-        """
-        Получает задачи связанные с текущим пользователем из Planfix API
-        """
-        if not self.user_id:
-            self.get_current_user_id()
-        
-        try:
-            all_user_tasks = []
-            
-            filter_configs = [
-                {
-                    "name": "Исполнитель",
-                    "filters": [
-                        {
-                            "type": 2,
-                            "operator": "equal",
-                            "value": f"user:{self.user_id}"
-                        }
-                    ]
-                },
-                {
-                    "name": "Постановщик", 
-                    "filters": [
-                        {
-                            "type": 3,
-                            "operator": "equal",
-                            "value": f"user:{self.user_id}"
-                        }
-                    ]
-                },
-                {
-                    "name": "Контролер/Участник",
-                    "filters": [
-                        {
-                            "type": 4,
-                            "operator": "equal", 
-                            "value": f"user:{self.user_id}"
-                        }
-                    ]
-                }
-            ]
-            
-            task_ids_seen = set()
-            
-            for config in filter_configs:
-                try:
-                    payload = {
-                        "offset": 0,
-                        "pageSize": 100,
-                        "filters": config["filters"],
-                        "fields": "id,name,description,endDateTime,startDateTime,status,priority,assignees,participants,auditors,assigner,overdue"
-                    }
-                    
-                    response = self.session.post(
-                        f"{self.account_url}/task/list",
-                        json=payload,
-                        timeout=30
-                    )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get('result') != 'fail':
-                            tasks = data.get('tasks', [])
-                            
-                            for task in tasks:
-                                task_id = task.get('id')
-                                if task_id not in task_ids_seen:
-                                    task_ids_seen.add(task_id)
-                                    all_user_tasks.append(task)
-                        
-                except Exception:
-                    continue
-            
-            if not all_user_tasks:
-                all_user_tasks = self._get_all_tasks_and_filter_manually()
-            
-            # Фильтруем только незакрытые задачи
-            active_tasks = []
-            closed_statuses = ['Выполненная', 'Отменена', 'Закрыта', 'Завершена']
-            
-            for task in all_user_tasks:
-                status = task.get('status', {})
-                status_name = status.get('name', '') if isinstance(status, dict) else str(status)
-                
-                if status_name not in closed_statuses:
-                    active_tasks.append(task)
-            
-            return active_tasks
+                # Используем настройки ролей из конфига
+                return self._get_tasks_by_roles()
                 
         except Exception:
             return []
 
-    def _get_all_tasks_and_filter_manually(self) -> List[Dict[Any, Any]]:
-        """
-        Получает все задачи и фильтрует по пользователю вручную
-        """
+    def _get_tasks_by_filter(self) -> List[Dict[Any, Any]]:
+        """Получает задачи по готовому фильтру Planfix"""
         try:
             payload = {
                 "offset": 0,
-                "pageSize": 200,
+                "pageSize": 100,
+                "filterId": int(self.filter_id),
                 "fields": "id,name,description,endDateTime,startDateTime,status,priority,assignees,participants,auditors,assigner,overdue"
             }
             
@@ -636,72 +531,137 @@ class PlanfixAPI:
             
             if response.status_code == 200:
                 data = response.json()
-                all_tasks = data.get('tasks', [])
-                
-                user_tasks = []
-                user_id_str = str(self.user_id)
-                
-                for task in all_tasks:
-                    is_user_involved = False
-                    
-                    # Проверяем исполнителей
-                    assignees = task.get('assignees', {})
-                    if assignees:
-                        users = assignees.get('users', [])
-                        for user in users:
-                            if str(user.get('id', '')) == user_id_str:
-                                is_user_involved = True
-                                break
-                    
-                    # Проверяем участников
-                    participants = task.get('participants', {})
-                    if participants and not is_user_involved:
-                        users = participants.get('users', [])
-                        for user in users:
-                            if str(user.get('id', '')) == user_id_str:
-                                is_user_involved = True
-                                break
-                    
-                    # Проверяем контролеров
-                    auditors = task.get('auditors', {})
-                    if auditors and not is_user_involved:
-                        users = auditors.get('users', [])
-                        for user in users:
-                            if str(user.get('id', '')) == user_id_str:
-                                is_user_involved = True
-                                break
-                    
-                    # Проверяем постановщика
-                    assigner = task.get('assigner', {})
-                    if assigner and not is_user_involved:
-                        if str(assigner.get('id', '')) == user_id_str:
-                            is_user_involved = True
-                    
-                    if is_user_involved:
-                        user_tasks.append(task)
-                
-                return user_tasks
-            else:
-                return []
-                
+                if data.get('result') != 'fail':
+                    all_tasks = data.get('tasks', [])
+                    return self._filter_active_tasks(all_tasks)
+            
+            return []
+            
         except Exception:
             return []
-      
-    def test_connection(self) -> bool:
-        """
-        Тестирует соединение с API
-        """
+
+    def _get_tasks_by_roles(self) -> List[Dict[Any, Any]]:
+        """Получает задачи по ролям пользователя (исполнитель/постановщик/контролер)"""
+        # Загружаем настройки ролей из конфига
+        config = configparser.ConfigParser()
+        try:
+            config.read('config.ini', encoding='utf-8')
+            user_id = config.get('Planfix', 'user_id', fallback='1')
+            include_assignee = config.getboolean('Roles', 'include_assignee', fallback=True)
+            include_assigner = config.getboolean('Roles', 'include_assigner', fallback=True) 
+            include_auditor = config.getboolean('Roles', 'include_auditor', fallback=True)
+        except Exception:
+            # Fallback настройки
+            user_id = '1'
+            include_assignee = True
+            include_assigner = True
+            include_auditor = True
+        
+        all_tasks = []
+        task_ids_seen = set()
+        
+        # 1. Задачи где пользователь - ИСПОЛНИТЕЛЬ
+        if include_assignee:
+            assignee_tasks = self._get_tasks_by_role_type(user_id, role_type=2, role_name="Исполнитель")
+            for task in assignee_tasks:
+                task_id = task.get('id')
+                if task_id not in task_ids_seen:
+                    task_ids_seen.add(task_id)
+                    all_tasks.append(task)
+        
+        # 2. Задачи где пользователь - ПОСТАНОВЩИК
+        if include_assigner:
+            assigner_tasks = self._get_tasks_by_role_type(user_id, role_type=3, role_name="Постановщик")
+            for task in assigner_tasks:
+                task_id = task.get('id')
+                if task_id not in task_ids_seen:
+                    task_ids_seen.add(task_id)
+                    all_tasks.append(task)
+        
+        # 3. Задачи где пользователь - КОНТРОЛЕР/УЧАСТНИК
+        if include_auditor:
+            auditor_tasks = self._get_tasks_by_role_type(user_id, role_type=4, role_name="Контролер")
+            for task in auditor_tasks:
+                task_id = task.get('id')
+                if task_id not in task_ids_seen:
+                    task_ids_seen.add(task_id)
+                    all_tasks.append(task)
+        
+        return self._filter_active_tasks(all_tasks)
+
+    def _get_tasks_by_role_type(self, user_id: str, role_type: int, role_name: str) -> List[Dict]:
+        """Получает задачи по конкретному типу роли"""
         try:
             payload = {
                 "offset": 0,
-                "pageSize": 1,
-                "fields": "id,name"
+                "pageSize": 100,
+                "filters": [
+                    {
+                        "type": role_type,
+                        "operator": "equal",
+                        "value": f"user:{user_id}"
+                    }
+                ],
+                "fields": "id,name,description,endDateTime,startDateTime,status,priority,assignees,participants,auditors,assigner,overdue"
             }
+            
             response = self.session.post(
-                f"{self.account_url}/user/list",
+                f"{self.account_url}/task/list",
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('result') != 'fail':
+                    return data.get('tasks', [])
+            
+            return []
+            
+        except Exception:
+            return []
+
+    def _filter_active_tasks(self, all_tasks: List[Dict]) -> List[Dict]:
+        """Фильтрует только активные задачи (убирает закрытые)"""
+        active_tasks = []
+        closed_statuses = ['Выполненная', 'Отменена', 'Закрыта', 'Завершенная']
+        
+        for task in all_tasks:
+            status = task.get('status', {})
+            status_name = status.get('name', '') if isinstance(status, dict) else str(status)
+            
+            if status_name not in closed_statuses:
+                active_tasks.append(task)
+        
+        return active_tasks
+
+    def test_connection(self) -> bool:
+        """
+        Тестирует соединение с API и корректность фильтра
+        """
+        try:
+            if self.filter_id:
+                # Тестируем с фильтром
+                payload = {
+                    "offset": 0,
+                    "pageSize": 1,
+                    "filterId": int(self.filter_id),
+                    "fields": "id,name"
+                }
+            else:
+                # Тестируем базовое подключение
+                payload = {
+                    "offset": 0,
+                    "pageSize": 1,
+                    "fields": "id,name"
+                }
+            
+            response = self.session.post(
+                f"{self.account_url}/task/list",
                 json=payload,
                 timeout=10
             )
+            
             if response.status_code == 200:
                 data = response.json()
                 if data.get('result') == 'fail':
@@ -725,7 +685,7 @@ def categorize_tasks(tasks: List[Dict]) -> Dict[str, List[Dict]]:
         'current': []
     }
     
-    closed_statuses = ['Выполненная', 'Отменена', 'Закрыта', 'Завершена']
+    closed_statuses = ['Выполненная', 'Отменена', 'Закрыта', 'Завершенная']  # ИСПРАВЛЕНО: "Завершенная"
     
     for task in tasks:
         try:
@@ -899,21 +859,28 @@ def format_task_message(task: Dict, category: str) -> tuple:
 
 def load_config() -> tuple:
     """
-    Загружает конфигурацию из файла
+    ОБНОВЛЕНО: Загружает конфигурацию из файла (с поддержкой всех параметров + ролей)
     """
+    global CHECK_INTERVAL_SECONDS, MAX_WINDOWS_PER_CATEGORY, MAX_TOTAL_WINDOWS
+    
     config = configparser.ConfigParser()
     config_file_path = 'config.ini'
     
     if not os.path.exists(config_file_path):
-        return None, None, None, None
+        return None, None, None, None, None
     
     encodings_to_try = ['utf-8', 'cp1251', 'windows-1251', 'latin-1']
     
     for encoding in encodings_to_try:
         try:
             config.read(config_file_path, encoding=encoding)
+            
+            # Основные параметры Planfix
             api_token = config['Planfix']['api_token']
             account_url = config['Planfix']['account_url']
+            filter_id = config.get('Planfix', 'filter_id', fallback=None)
+            
+            # Настройки уведомлений
             check_interval = int(config.get('Settings', 'check_interval', fallback=300))
             notification_settings = {
                 'current': config.getboolean('Settings', 'notify_current', fallback=True),
@@ -921,29 +888,47 @@ def load_config() -> tuple:
                 'overdue': config.getboolean('Settings', 'notify_overdue', fallback=True)
             }
             
-            if not api_token or api_token in ['ВАШ_API_ТОКЕН', 'ВАШ_API_ТОКЕН_ЗДЕСЬ', 'YOUR_API_TOKEN_HERE']:
-                return None, None, None, None
+            # Лимиты окон
+            max_windows_per_category = int(config.get('Settings', 'max_windows_per_category', fallback=5))
+            max_total_windows = int(config.get('Settings', 'max_total_windows', fallback=10))
+            
+            # НОВЫЕ НАСТРОЙКИ: Роли пользователя (если нет filter_id)
+            role_settings = {
+                'include_assignee': config.getboolean('Roles', 'include_assignee', fallback=True),
+                'include_assigner': config.getboolean('Roles', 'include_assigner', fallback=True),
+                'include_auditor': config.getboolean('Roles', 'include_auditor', fallback=True),
+                'user_id': config.get('Planfix', 'user_id', fallback='1')
+            }
+            
+            # Обновляем глобальные переменные
+            CHECK_INTERVAL_SECONDS = check_interval
+            MAX_WINDOWS_PER_CATEGORY = max_windows_per_category
+            MAX_TOTAL_WINDOWS = max_total_windows
+            
+            # Проверки корректности
+            if not api_token or api_token in ['ВАШ_API_ТОКЕН', 'ВАШ_API_ТОКЕН_ЗДЕСЬ', 'YOUR_API_TOKEN_HERE', 'YOUR_SHARED_API_TOKEN_HERE']:
+                return None, None, None, None, None
                 
             if not account_url.endswith('/rest'):
-                return None, None, None, None
+                return None, None, None, None, None
                 
-            return api_token, account_url, check_interval, notification_settings
+            return api_token, account_url, filter_id, check_interval, notification_settings
             
         except Exception:
             continue
     
-    return None, None, None, None
+    return None, None, None, None, None
 
 def main():
     """
-    Основная функция программы
+    ОБНОВЛЕНО: Основная функция программы (с поддержкой фильтров)
     """
     config_result = load_config()
-    if not all(config_result):
+    if not all(config_result[:4]):  # Проверяем первые 4 элемента (filter_id может быть None)
         return
         
-    api_token, account_url, check_interval, notification_settings = config_result
-    planfix = PlanfixAPI(account_url, api_token)
+    api_token, account_url, filter_id, check_interval, notification_settings = config_result
+    planfix = PlanfixAPI(account_url, api_token, filter_id)  # ПЕРЕДАЕМ filter_id
     
     if not planfix.test_connection():
         return
@@ -957,7 +942,8 @@ def main():
             try:
                 cleanup_closed_windows()
                 
-                tasks = planfix.get_current_user_tasks()
+                # ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД
+                tasks = planfix.get_filtered_tasks()
                 if not tasks:
                     time.sleep(check_interval)
                     continue
