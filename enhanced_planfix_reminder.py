@@ -1,9 +1,3 @@
-# ОСНОВНЫЕ ИЗМЕНЕНИЯ В ЭТОЙ ВЕРСИИ:
-# 1. Добавлена поддержка filter_id из config.ini
-# 2. Новый метод get_filtered_tasks() вместо get_current_user_tasks()
-# 3. Убрана логика определения user_id из токена
-# 4. Исправлен список закрытых статусов: "Завершенная" вместо "Завершена"
-
 import requests
 import time
 from plyer import notification
@@ -20,11 +14,34 @@ import winsound
 import webbrowser
 from urllib.parse import quote
 import queue
+import pystray
+from PIL import Image, ImageDraw
+import io
+import base64
+from pathlib import Path
 
-# --- Конфигурация (будет загружаться из config.ini) ---
-CHECK_INTERVAL_SECONDS = 300  # По умолчанию 5 минут (будет перезаписано из config)
-MAX_WINDOWS_PER_CATEGORY = 5  # По умолчанию (будет перезаписано из config)
-MAX_TOTAL_WINDOWS = 10        # По умолчанию (будет перезаписано из config)
+# Глобальные переменные (все будут загружены из config.ini)
+app_config = {
+    'check_interval': 300,
+    'max_windows_per_category': 5,
+    'max_total_windows': 10,
+    'notifications': {
+        'current': True,
+        'urgent': True,
+        'overdue': True
+    },
+    'roles': {
+        'include_assignee': True,
+        'include_assigner': True,
+        'include_auditor': True
+    },
+    'planfix': {
+        'api_token': '',
+        'account_url': '',
+        'filter_id': None,
+        'user_id': '1'
+    }
+}
 
 # Глобальная очередь для Toast-уведомлений
 toast_queue = queue.Queue()
@@ -32,6 +49,14 @@ toast_queue = queue.Queue()
 active_windows = []
 # Система отслеживания закрытых задач
 closed_tasks = {}  # task_id: {'closed_time': datetime, 'snooze_until': datetime, 'auto_closed': bool}
+
+# Глобальные переменные для трея
+tray_icon = None
+is_paused = False
+pause_until = None
+last_check_time = None
+current_stats = {'total': 0, 'overdue': 0, 'urgent': 0}
+planfix_api = None
 
 class ToastNotification:
     """
@@ -325,10 +350,8 @@ class ToastNotification:
     def _open_task(self):
         """Открывает задачу в браузере"""
         if self.task_id:
-            config = configparser.ConfigParser()
             try:
-                config.read('config.ini', encoding='utf-8')
-                account_url = config['Planfix']['account_url'].replace('/rest', '')
+                account_url = app_config['planfix']['account_url'].replace('/rest', '')
                 task_url = f"{account_url}/task/{self.task_id}/"
                 webbrowser.open(task_url)
             except Exception:
@@ -445,10 +468,10 @@ def should_show_notification(task_id: str, category: str) -> bool:
     active_count = len(active_windows)
     category_count = len([w for w in active_windows if w.category == category])
     
-    if active_count >= MAX_TOTAL_WINDOWS:
+    if active_count >= app_config['max_total_windows']:
         return False
         
-    if category_count >= MAX_WINDOWS_PER_CATEGORY:
+    if category_count >= app_config['max_windows_per_category']:
         return False
     
     # 3. Проверяем есть ли задача в списке закрытых
@@ -488,10 +511,10 @@ def cleanup_old_closed_tasks():
         del closed_tasks[task_id]
 
 class PlanfixAPI:
-    def __init__(self, account_url: str, api_token: str, filter_id: str = None):
-        self.account_url = account_url.rstrip('/')
-        self.api_token = api_token
-        self.filter_id = filter_id  # НОВЫЙ ПАРАМЕТР - ID фильтра из config.ini
+    def __init__(self):
+        self.account_url = app_config['planfix']['account_url'].rstrip('/')
+        self.api_token = app_config['planfix']['api_token']
+        self.filter_id = app_config['planfix']['filter_id']
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
@@ -500,16 +523,13 @@ class PlanfixAPI:
 
     def get_filtered_tasks(self) -> List[Dict[Any, Any]]:
         """
-        ОБНОВЛЕНО: Получает задачи по фильтру ИЛИ по ролям пользователя
+        Получает задачи по фильтру ИЛИ по ролям пользователя
         """
         try:
             if self.filter_id:
-                # Используем готовый фильтр из Planfix
                 return self._get_tasks_by_filter()
             else:
-                # Используем настройки ролей из конфига
                 return self._get_tasks_by_roles()
-                
         except Exception:
             return []
 
@@ -541,37 +561,23 @@ class PlanfixAPI:
             return []
 
     def _get_tasks_by_roles(self) -> List[Dict[Any, Any]]:
-        """Получает задачи по ролям пользователя (исполнитель/постановщик/контролер)"""
-        # Загружаем настройки ролей из конфига
-        config = configparser.ConfigParser()
-        try:
-            config.read('config.ini', encoding='utf-8')
-            user_id = config.get('Planfix', 'user_id', fallback='1')
-            include_assignee = config.getboolean('Roles', 'include_assignee', fallback=True)
-            include_assigner = config.getboolean('Roles', 'include_assigner', fallback=True) 
-            include_auditor = config.getboolean('Roles', 'include_auditor', fallback=True)
-        except Exception:
-            # Fallback настройки
-            user_id = '1'
-            include_assignee = True
-            include_assigner = True
-            include_auditor = True
-        
+        """Получает задачи по ролям пользователя"""
+        user_id = app_config['planfix']['user_id']
         all_tasks = []
         task_ids_seen = set()
         
         # 1. Задачи где пользователь - ИСПОЛНИТЕЛЬ
-        if include_assignee:
-            assignee_tasks = self._get_tasks_by_role_type(user_id, role_type=2, role_name="Исполнитель")
+        if app_config['roles']['include_assignee']:
+            assignee_tasks = self._get_tasks_by_role_type(user_id, role_type=2)
             for task in assignee_tasks:
                 task_id = task.get('id')
                 if task_id not in task_ids_seen:
                     task_ids_seen.add(task_id)
                     all_tasks.append(task)
         
-        # 2. Задачи где пользователь - ПОСТАНОВЩИК
-        if include_assigner:
-            assigner_tasks = self._get_tasks_by_role_type(user_id, role_type=3, role_name="Постановщик")
+        # 2. Задачи где пользователь - POSTАНОВЩИК
+        if app_config['roles']['include_assigner']:
+            assigner_tasks = self._get_tasks_by_role_type(user_id, role_type=3)
             for task in assigner_tasks:
                 task_id = task.get('id')
                 if task_id not in task_ids_seen:
@@ -579,8 +585,8 @@ class PlanfixAPI:
                     all_tasks.append(task)
         
         # 3. Задачи где пользователь - КОНТРОЛЕР/УЧАСТНИК
-        if include_auditor:
-            auditor_tasks = self._get_tasks_by_role_type(user_id, role_type=4, role_name="Контролер")
+        if app_config['roles']['include_auditor']:
+            auditor_tasks = self._get_tasks_by_role_type(user_id, role_type=4)
             for task in auditor_tasks:
                 task_id = task.get('id')
                 if task_id not in task_ids_seen:
@@ -589,7 +595,7 @@ class PlanfixAPI:
         
         return self._filter_active_tasks(all_tasks)
 
-    def _get_tasks_by_role_type(self, user_id: str, role_type: int, role_name: str) -> List[Dict]:
+    def _get_tasks_by_role_type(self, user_id: str, role_type: int) -> List[Dict]:
         """Получает задачи по конкретному типу роли"""
         try:
             payload = {
@@ -636,12 +642,9 @@ class PlanfixAPI:
         return active_tasks
 
     def test_connection(self) -> bool:
-        """
-        Тестирует соединение с API и корректность фильтра
-        """
+        """Тестирует соединение с API"""
         try:
             if self.filter_id:
-                # Тестируем с фильтром
                 payload = {
                     "offset": 0,
                     "pageSize": 1,
@@ -649,7 +652,6 @@ class PlanfixAPI:
                     "fields": "id,name"
                 }
             else:
-                # Тестируем базовое подключение
                 payload = {
                     "offset": 0,
                     "pageSize": 1,
@@ -685,7 +687,7 @@ def categorize_tasks(tasks: List[Dict]) -> Dict[str, List[Dict]]:
         'current': []
     }
     
-    closed_statuses = ['Выполненная', 'Отменена', 'Закрыта', 'Завершенная']  # ИСПРАВЛЕНО: "Завершенная"
+    closed_statuses = ['Выполненная', 'Отменена', 'Закрыта', 'Завершенная']
     
     for task in tasks:
         try:
@@ -857,129 +859,572 @@ def format_task_message(task: Dict, category: str) -> tuple:
     
     return title, message
 
-def load_config() -> tuple:
+def load_config() -> bool:
     """
-    ОБНОВЛЕНО: Загружает конфигурацию из файла (с поддержкой всех параметров + ролей)
+    Загружает конфигурацию из файла в глобальную переменную app_config
+    С подробной диагностикой
     """
-    global CHECK_INTERVAL_SECONDS, MAX_WINDOWS_PER_CATEGORY, MAX_TOTAL_WINDOWS
+    global app_config
     
+    print("=== ДИАГНОСТИКА ПОИСКА КОНФИГА ===")
+    
+    # Определяем возможные пути к конфигу
+    script_dir = Path(__file__).parent.absolute()
+    current_dir = Path.cwd()
+    
+    print(f"Текущая рабочая директория: {current_dir}")
+    print(f"Директория скрипта: {script_dir}")
+    print()
+    
+    config_paths = [
+        current_dir / 'config.ini',
+        script_dir / 'config.ini',
+        Path('config.ini'),
+    ]
+    
+    config_file_path = None
+    
+    # Ищем конфиг в разных местах
+    for i, path in enumerate(config_paths, 1):
+        print(f"🔍 Путь {i}: {path}")
+        print(f"   Абсолютный: {path.absolute()}")
+        print(f"   Существует: {path.exists()}")
+        
+        if path.exists():
+            try:
+                size = path.stat().st_size
+                print(f"   ✅ Размер: {size} байт")
+                config_file_path = path
+                break
+            except Exception as e:
+                print(f"   ❌ Ошибка доступа: {e}")
+        else:
+            print(f"   ❌ Файл не найден")
+        print()
+    
+    if not config_file_path:
+        print("🚨 ФАЙЛ CONFIG.INI НЕ НАЙДЕН!")
+        
+        print(f"\n📂 Содержимое текущей директории ({current_dir}):")
+        try:
+            for item in sorted(current_dir.iterdir()):
+                if item.is_file():
+                    print(f"   📄 {item.name}")
+                else:
+                    print(f"   📁 {item.name}/")
+        except Exception as e:
+            print(f"   ❌ Ошибка чтения: {e}")
+        
+        if current_dir != script_dir:
+            print(f"\n📂 Содержимое директории скрипта ({script_dir}):")
+            try:
+                for item in sorted(script_dir.iterdir()):
+                    if item.is_file():
+                        print(f"   📄 {item.name}")
+                    else:
+                        print(f"   📁 {item.name}/")
+            except Exception as e:
+                print(f"   ❌ Ошибка чтения: {e}")
+        
+        return False
+    
+    print(f"✅ НАЙДЕН CONFIG.INI: {config_file_path}")
+    
+    # Читаем конфиг с разными кодировками
     config = configparser.ConfigParser()
-    config_file_path = 'config.ini'
-    
-    if not os.path.exists(config_file_path):
-        return None, None, None, None, None
-    
     encodings_to_try = ['utf-8', 'cp1251', 'windows-1251', 'latin-1']
     
+    config_loaded = False
     for encoding in encodings_to_try:
         try:
-            config.read(config_file_path, encoding=encoding)
+            print(f"Пробую кодировку: {encoding}")
+            config.read(str(config_file_path), encoding=encoding)
             
-            # Основные параметры Planfix
-            api_token = config['Planfix']['api_token']
-            account_url = config['Planfix']['account_url']
-            filter_id = config.get('Planfix', 'filter_id', fallback=None)
+            # Проверяем что секции загрузились
+            sections = config.sections()
+            print(f"  Найдены секции: {sections}")
             
-            # Настройки уведомлений
-            check_interval = int(config.get('Settings', 'check_interval', fallback=300))
-            notification_settings = {
-                'current': config.getboolean('Settings', 'notify_current', fallback=True),
-                'urgent': config.getboolean('Settings', 'notify_urgent', fallback=True),
-                'overdue': config.getboolean('Settings', 'notify_overdue', fallback=True)
-            }
+            if 'Planfix' not in sections:
+                print(f"  ❌ Секция [Planfix] не найдена")
+                continue
+                
+            # Проверяем обязательные поля
+            api_token = config.get('Planfix', 'api_token', fallback='')
+            account_url = config.get('Planfix', 'account_url', fallback='')
             
-            # Лимиты окон
-            max_windows_per_category = int(config.get('Settings', 'max_windows_per_category', fallback=5))
-            max_total_windows = int(config.get('Settings', 'max_total_windows', fallback=10))
+            print(f"  API Token: {'***' + api_token[-4:] if len(api_token) > 4 else 'НЕ ЗАДАН'}")
+            print(f"  Account URL: {account_url}")
             
-            # НОВЫЕ НАСТРОЙКИ: Роли пользователя (если нет filter_id)
-            role_settings = {
-                'include_assignee': config.getboolean('Roles', 'include_assignee', fallback=True),
-                'include_assigner': config.getboolean('Roles', 'include_assigner', fallback=True),
-                'include_auditor': config.getboolean('Roles', 'include_auditor', fallback=True),
-                'user_id': config.get('Planfix', 'user_id', fallback='1')
-            }
-            
-            # Обновляем глобальные переменные
-            CHECK_INTERVAL_SECONDS = check_interval
-            MAX_WINDOWS_PER_CATEGORY = max_windows_per_category
-            MAX_TOTAL_WINDOWS = max_total_windows
-            
-            # Проверки корректности
-            if not api_token or api_token in ['ВАШ_API_ТОКЕН', 'ВАШ_API_ТОКЕН_ЗДЕСЬ', 'YOUR_API_TOKEN_HERE', 'YOUR_SHARED_API_TOKEN_HERE']:
-                return None, None, None, None, None
+            if not api_token or api_token in ['ВАШ_API_ТОКЕН', 'YOUR_API_TOKEN', 'YOUR_API_TOKEN_HERE']:
+                print(f"  ❌ API токен не настроен")
+                continue
                 
             if not account_url.endswith('/rest'):
-                return None, None, None, None, None
-                
-            return api_token, account_url, filter_id, check_interval, notification_settings
+                print(f"  ❌ URL должен заканчиваться на /rest")
+                continue
             
-        except Exception:
+            config_loaded = True
+            print(f"  ✅ Конфиг успешно загружен с кодировкой {encoding}")
+            break
+            
+        except Exception as e:
+            print(f"  ❌ Ошибка с кодировкой {encoding}: {e}")
             continue
     
-    return None, None, None, None, None
+    if not config_loaded:
+        print("❌ НЕ УДАЛОСЬ ЗАГРУЗИТЬ КОНФИГ!")
+        return False
+    
+    try:
+        # Загружаем настройки
+        app_config['planfix']['api_token'] = config['Planfix']['api_token']
+        app_config['planfix']['account_url'] = config['Planfix']['account_url']
+        app_config['planfix']['filter_id'] = config.get('Planfix', 'filter_id', fallback=None)
+        app_config['planfix']['user_id'] = config.get('Planfix', 'user_id', fallback='1')
+        
+        # Очищаем filter_id если он пустой
+        if app_config['planfix']['filter_id'] == '':
+            app_config['planfix']['filter_id'] = None
+        
+        # Загружаем настройки уведомлений
+        app_config['check_interval'] = int(config.get('Settings', 'check_interval', fallback=300))
+        app_config['max_windows_per_category'] = int(config.get('Settings', 'max_windows_per_category', fallback=5))
+        app_config['max_total_windows'] = int(config.get('Settings', 'max_total_windows', fallback=10))
+        
+        app_config['notifications']['current'] = config.getboolean('Settings', 'notify_current', fallback=True)
+        app_config['notifications']['urgent'] = config.getboolean('Settings', 'notify_urgent', fallback=True)
+        app_config['notifications']['overdue'] = config.getboolean('Settings', 'notify_overdue', fallback=True)
+        
+        # Загружаем настройки ролей
+        if config.has_section('Roles'):
+            app_config['roles']['include_assignee'] = config.getboolean('Roles', 'include_assignee', fallback=True)
+            app_config['roles']['include_assigner'] = config.getboolean('Roles', 'include_assigner', fallback=True)
+            app_config['roles']['include_auditor'] = config.getboolean('Roles', 'include_auditor', fallback=True)
+        
+        print("✅ Все настройки успешно загружены")
+        print(f"   Filter ID: {app_config['planfix']['filter_id'] or 'НЕ ИСПОЛЬЗУЕТСЯ'}")
+        print(f"   User ID: {app_config['planfix']['user_id']}")
+        print("=" * 35)
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка при загрузке настроек: {e}")
+        return False
+
+# ========================================
+# ФУНКЦИИ СИСТЕМНОГО ТРЕЯ
+# ========================================
+
+def create_tray_icon():
+    """Создает иконку для системного трея"""
+    # Создаем простую иконку программно
+    image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    
+    # Определяем цвет по состоянию
+    global current_stats, is_paused
+    
+    if is_paused:
+        color = (128, 128, 128)  # Серый - на паузе
+    elif current_stats['overdue'] > 0:
+        color = (255, 68, 68)    # Красный - есть просроченные
+    elif current_stats['urgent'] > 0:
+        color = (255, 136, 0)    # Оранжевый - есть срочные
+    else:
+        color = (0, 200, 0)      # Зеленый - все хорошо
+    
+    # Рисуем круг
+    draw.ellipse([8, 8, 56, 56], fill=color, outline=(255, 255, 255), width=2)
+    
+    # Добавляем букву P
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype("arial.ttf", 24)
+    except:
+        font = None
+    
+    draw.text((32, 32), "P", fill=(255, 255, 255), anchor="mm", font=font)
+    
+    return image
+
+def update_tray_icon():
+    """Обновляет иконку в трее"""
+    global tray_icon
+    if tray_icon:
+        tray_icon.icon = create_tray_icon()
+
+def get_tray_menu():
+    """Создает меню для системного трея"""
+    global is_paused, current_stats, last_check_time
+    
+    # Формируем строку состояния
+    if is_paused:
+        if pause_until:
+            pause_str = f"На паузе до {pause_until.strftime('%H:%M')}"
+        else:
+            pause_str = "На паузе"
+        status_item = pystray.MenuItem(f"⏸️ {pause_str}", None, enabled=False)
+    else:
+        total = current_stats['total']
+        overdue = current_stats['overdue']
+        status_item = pystray.MenuItem(f"🟢 Активен ({total} задач, {overdue} просроч.)", None, enabled=False)
+    
+    # Время последней проверки
+    if last_check_time:
+        time_str = last_check_time.strftime('%H:%M:%S')
+        last_check_item = pystray.MenuItem(f"Последняя проверка: {time_str}", None, enabled=False)
+    else:
+        last_check_item = pystray.MenuItem("Еще не проверялось", None, enabled=False)
+    
+    # Создаем меню
+    menu = pystray.Menu(
+        status_item,
+        last_check_item,
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("📊 Проверить сейчас", lambda: check_tasks_now()),
+        pystray.MenuItem("⏸️ Пауза на 1 час", lambda: pause_monitoring(60)) if not is_paused else pystray.MenuItem("▶️ Возобновить", lambda: resume_monitoring()),
+        pystray.MenuItem("⏸️ Пауза до завтра 9:00", lambda: pause_until_tomorrow()) if not is_paused else None,
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("🌐 Открыть Planfix", lambda: open_planfix()),
+        pystray.MenuItem("📖 Инструкция", lambda: show_help()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("❌ Выход", lambda: quit_application()),
+    )
+    
+    return menu
+
+def check_tasks_now():
+    """Принудительно проверяет задачи сейчас"""
+    global last_check_time
+    try:
+        if planfix_api:
+            tasks = planfix_api.get_filtered_tasks()
+            categorized_tasks = categorize_tasks(tasks)
+            
+            # Обновляем статистику
+            current_stats['total'] = len(tasks)
+            current_stats['overdue'] = len(categorized_tasks['overdue'])
+            current_stats['urgent'] = len(categorized_tasks['urgent'])
+            
+            # Показываем уведомления
+            new_notifications = 0
+            for category, tasks_list in categorized_tasks.items():
+                if not app_config['notifications'].get(category, True):
+                    continue
+                    
+                for task in tasks_list:
+                    task_id = str(task.get('id'))
+                    title, message = format_task_message(task, category)
+                    
+                    if show_toast_notification(title, message, category, task_id):
+                        new_notifications += 1
+                        time.sleep(0.5)
+            
+            last_check_time = datetime.datetime.now()
+            update_tray_icon()
+            
+            # Показываем balloon tip с результатом
+            if tray_icon:
+                if new_notifications > 0:
+                    tray_icon.notify(f"Найдено {new_notifications} новых уведомлений", "Planfix Reminder")
+                else:
+                    tray_icon.notify(f"Найдено {len(tasks)} задач, новых уведомлений нет", "Planfix Reminder")
+                    
+    except Exception as e:
+        if tray_icon:
+            tray_icon.notify(f"Ошибка проверки: {str(e)[:50]}", "Planfix Reminder")
+
+def pause_monitoring(minutes: int):
+    """Ставит мониторинг на паузу"""
+    global is_paused, pause_until
+    is_paused = True
+    pause_until = datetime.datetime.now() + datetime.timedelta(minutes=minutes)
+    update_tray_icon()
+    
+    if tray_icon:
+        tray_icon.notify(f"Мониторинг приостановлен на {minutes} минут", "Planfix Reminder")
+
+def pause_until_tomorrow():
+    """Ставит на паузу до завтра 9:00"""
+    global is_paused, pause_until
+    is_paused = True
+    tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+    pause_until = datetime.datetime.combine(tomorrow, datetime.time(9, 0))
+    update_tray_icon()
+    
+    if tray_icon:
+        tray_icon.notify("Мониторинг приостановлен до завтра 9:00", "Planfix Reminder")
+
+def resume_monitoring():
+    """Возобновляет мониторинг"""
+    global is_paused, pause_until
+    is_paused = False
+    pause_until = None
+    update_tray_icon()
+    
+    if tray_icon:
+        tray_icon.notify("Мониторинг возобновлен", "Planfix Reminder")
+
+def open_planfix():
+    """Открывает Planfix в браузере"""
+    try:
+        url = app_config['planfix']['account_url'].replace('/rest', '')
+        webbrowser.open(url)
+    except Exception:
+        webbrowser.open("https://planfix.com")
+
+def show_help():
+    """Показывает справку"""
+    help_text = """
+Planfix Reminder - Справка
+
+УПРАВЛЕНИЕ:
+• Двойной клик по иконке - проверить задачи
+• ПКМ по иконке - меню управления
+• Пауза - временно отключить уведомления
+• Выход - полностью закрыть программу
+
+ЦВЕТА ИКОНКИ:
+🟢 Зеленый - все в порядке
+🟡 Оранжевый - есть срочные задачи
+🔴 Красный - есть просроченные задачи
+⚫ Серый - на паузе
+
+УВЕДОМЛЕНИЯ:
+• Красные - просроченные задачи
+• Оранжевые - срочные (сегодня/завтра)
+• Синие - обычные задачи
+
+Настройки в файле config.ini
+    """
+    
+    # Создаем простое окно справки
+    help_window = tk.Tk()
+    help_window.title("Справка - Planfix Reminder")
+    help_window.geometry("500x400")
+    help_window.resizable(False, False)
+    
+    text_widget = tk.Text(help_window, wrap=tk.WORD, padx=10, pady=10)
+    text_widget.pack(fill=tk.BOTH, expand=True)
+    text_widget.insert(tk.END, help_text)
+    text_widget.config(state=tk.DISABLED)
+    
+    help_window.mainloop()
+
+def quit_application():
+    """Выходит из приложения"""
+    global tray_icon
+    if tray_icon:
+        tray_icon.stop()
+    os._exit(0)
+
+def on_double_click(icon, item):
+    """Обработка двойного клика по иконке"""
+    check_tasks_now()
+
+def create_and_run_tray():
+    """Создает и запускает системный трей"""
+    global tray_icon
+    
+    tray_icon = pystray.Icon(
+        name="Planfix Reminder",
+        icon=create_tray_icon(),
+        title="Planfix Reminder",
+        menu=get_tray_menu()
+    )
+    
+    # Обновляем меню каждые 30 секунд
+    def update_menu():
+        while True:
+            time.sleep(30)
+            if tray_icon:
+                tray_icon.menu = get_tray_menu()
+    
+    threading.Thread(target=update_menu, daemon=True).start()
+    
+    # Запускаем трей
+    tray_icon.run_detached()
 
 def main():
     """
-    ОБНОВЛЕНО: Основная функция программы (с поддержкой фильтров)
+    Основная функция программы с системным треем
     """
-    config_result = load_config()
-    if not all(config_result[:4]):  # Проверяем первые 4 элемента (filter_id может быть None)
-        return
+    global planfix_api, current_stats, last_check_time
+    
+    print("🚀 Запуск Planfix Reminder...")
+    print("=" * 40)
+    
+    # Загружаем конфигурацию
+    print("📋 Загрузка конфигурации...")
+    if not load_config():
+        print("\n❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить конфигурацию!")
         
-    api_token, account_url, filter_id, check_interval, notification_settings = config_result
-    planfix = PlanfixAPI(account_url, api_token, filter_id)  # ПЕРЕДАЕМ filter_id
-    
-    if not planfix.test_connection():
+        try:
+            import tkinter.messagebox as msgbox
+            root = tk.Tk()
+            root.withdraw()
+            
+            msgbox.showerror("Ошибка конфигурации", 
+                           "Не удалось загрузить config.ini\n\n"
+                           "Проверьте:\n"
+                           "• Файл config.ini существует\n"
+                           "• API токен настроен\n"
+                           "• URL заканчивается на /rest")
+            root.destroy()
+        except:
+            pass
+        
+        input("\nНажмите Enter для выхода...")
         return
     
-    toast_manager = ToastManager()
+    print("✅ Конфигурация загружена успешно")
     
+    # Создаем API клиент
+    print("\n🌐 Подключение к Planfix API...")
+    planfix_api = PlanfixAPI()
+    
+    # Тестируем соединение
+    print("🔄 Проверка подключения...")
+    if not planfix_api.test_connection():
+        print("❌ Не удалось подключиться к Planfix API")
+        
+        try:
+            import tkinter.messagebox as msgbox
+            root = tk.Tk()
+            root.withdraw()
+            
+            msgbox.showerror("Ошибка подключения", 
+                           "Не удалось подключиться к Planfix API\n\n"
+                           "Проверьте:\n"
+                           "• Интернет соединение\n"
+                           "• Правильность API токена\n"
+                           "• Доступность сервера Planfix")
+            root.destroy()
+        except:
+            pass
+        
+        input("\nНажмите Enter для выхода...")
+        return
+    
+    print("✅ Подключение к API успешно!")
+    
+    print(f"\n🎯 Настройки:")
+    print(f"   Filter ID: {app_config['planfix']['filter_id'] or 'НЕ ИСПОЛЬЗУЕТСЯ'}")
+    print(f"   User ID: {app_config['planfix']['user_id']}")
+    print(f"   Интервал проверки: {app_config['check_interval']} сек")
+    
+    print("\n🎯 Создание системного трея...")
+    # Создаем и запускаем системный трей
+    try:
+        create_and_run_tray()
+        print("✅ Системный трей создан")
+    except Exception as e:
+        print(f"❌ Ошибка создания трея: {e}")
+    
+    print("\n📬 Создание менеджера уведомлений...")
+    # Создаем менеджер Toast-уведомлений
+    try:
+        toast_manager = ToastManager()
+        print("✅ Менеджер уведомлений создан")
+    except Exception as e:
+        print(f"❌ Ошибка создания менеджера уведомлений: {e}")
+        return
+    
+    print(f"\n⏰ Запуск мониторинга")
+    print("🎉 Приложение готово к работе!")
+    print("=" * 40)
+    
+    # Запускаем мониторинг задач в отдельном потоке
     def monitor_tasks():
+        global current_stats, last_check_time, is_paused, pause_until
         cleanup_counter = 0
         
         while True:
             try:
+                # Проверяем не на паузе ли мы
+                if is_paused:
+                    if pause_until and datetime.datetime.now() >= pause_until:
+                        # Время паузы истекло
+                        resume_monitoring()
+                    else:
+                        # Все еще на паузе
+                        time.sleep(60)  # Проверяем каждую минуту
+                        continue
+                
                 cleanup_closed_windows()
                 
-                # ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД
-                tasks = planfix.get_filtered_tasks()
+                # Получаем задачи
+                tasks = planfix_api.get_filtered_tasks()
                 if not tasks:
-                    time.sleep(check_interval)
+                    print("ℹ️ Задач не найдено или ошибка получения")
+                    time.sleep(app_config['check_interval'])
                     continue
                     
                 categorized_tasks = categorize_tasks(tasks)
                 
+                # Обновляем статистику
+                current_stats['total'] = len(tasks)
+                current_stats['overdue'] = len(categorized_tasks.get('overdue', []))
+                current_stats['urgent'] = len(categorized_tasks.get('urgent', []))
+                
+                print(f"📊 Найдено задач: {current_stats['total']} (просрочено: {current_stats['overdue']}, срочно: {current_stats['urgent']})")
+                
+                # Показываем уведомления
+                new_notifications = 0
                 for category, tasks_list in categorized_tasks.items():
-                    if not notification_settings.get(category, True):
+                    if not app_config['notifications'].get(category, True):
                         continue
                         
                     for task in tasks_list:
                         task_id = str(task.get('id'))
                         title, message = format_task_message(task, category)
                         
-                        show_toast_notification(title, message, category, task_id)
+                        if show_toast_notification(title, message, category, task_id):
+                            new_notifications += 1
+                            print(f"📬 Показано уведомление: {category} - {task.get('name', 'Без названия')}")
                         time.sleep(1)
                 
+                if new_notifications == 0:
+                    print("📭 Новых уведомлений нет")
+                
+                last_check_time = datetime.datetime.now()
+                update_tray_icon()
+                
+                # Периодическая очистка
                 cleanup_counter += 1
                 if cleanup_counter >= 10:
                     cleanup_old_closed_tasks()
                     cleanup_counter = 0
                 
-                time.sleep(check_interval)
+                time.sleep(app_config['check_interval'])
                 
-            except Exception:
+            except Exception as e:
+                print(f"❌ Ошибка в мониторинге: {e}")
                 time.sleep(30)
     
     monitor_thread = threading.Thread(target=monitor_tasks, daemon=True)
     monitor_thread.start()
     
     try:
+        # Запускаем GUI в главном потоке
+        print("🖥️ Запуск интерфейса...")
         toast_manager.run()
     except KeyboardInterrupt:
-        pass
-    except Exception:
-        pass
+        print("\n⏹️ Остановка по Ctrl+C")
+    except Exception as e:
+        print(f"\n❌ Критическая ошибка GUI: {e}")
+    finally:
+        print("🔄 Завершение работы...")
+        quit_application()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"💥 КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        import traceback
+        traceback.print_exc()
+        input("\nНажмите Enter для выхода...")
+    except KeyboardInterrupt:
+        print("\n👋 До свидания!")
+        sys.exit(0)
